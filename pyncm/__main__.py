@@ -183,61 +183,65 @@ class TaskPoolExecutorThread(Thread):
     def run(self):
         def execute(task):
             if type(task) == TrackDownloadTask:
+                lyric_only = task.routine.args.lyric_only
+                dest_cvr = None
                 try:
                     if task.skip_download:
                         return
-                    # Downloding source audio
-                    apiCall = (
-                        track.GetTrackAudioV1
-                        if not task.routine.args.use_download_api
-                        else track.GetTrackDownloadURLV1
-                    )
-                    if task.routine.args.use_download_api:
-                        logger.warning("使用下载 API，可能消耗 VIP 下载额度！")
-                    dAudio = apiCall(task.audio.id, level=task.audio.level)
-                    assert "data" in dAudio, "其他错误： %s" % dAudio
-                    dAudio = dAudio["data"]
-                    if type(dAudio) == list:
-                        dAudio = dAudio[0]
-                    if not dAudio["url"]:
-                        # Attempt to give some sort of explaination
-                        # 来自 https://neteasecloudmusicapi-docs.4everland.app/#/?id=%e8%8e%b7%e5%8f%96%e6%ad%8c%e6%9b%b2%e8%af%a6%e6%83%85
-                        """fee : enum
-                        0: 免费或无版权
-                        1: VIP 歌曲
-                        4: 购买专辑
-                        8: 非会员可免费播放低音质，会员可播放高音质及下载
-                        fee 为 1 或 8 的歌曲均可单独购买 2 元单曲
-                        """
-                        fee = dAudio["fee"]
-                        assert fee != 0, "可能无版权"
-                        assert fee != 1, "VIP歌曲，账户可能无权访问"
-                        assert fee != 4, "歌曲所在专辑需购买"
-                        assert fee != 8, "歌曲可能需要单独购买或以低音质加载"
-                        assert False, "未知原因 (fee=%d)" % fee
-                    logger.info(
-                        "开始下载 #%d / %d - %s - %s - %skbps - %s"
-                        % (
-                            task.index + 1,
-                            task.total,
-                            task.song.Title,
-                            task.song.AlbumName,
-                            dAudio["br"] // 1000,
-                            dAudio["type"].upper(),
+                    if not lyric_only:
+                        # Downloding source audio
+                        apiCall = (
+                            track.GetTrackAudioV1
+                            if not task.routine.args.use_download_api
+                            else track.GetTrackDownloadURLV1
                         )
-                    )
-                    task.extension = dAudio["type"].lower()
+                        if task.routine.args.use_download_api:
+                            logger.warning("使用下载 API，可能消耗 VIP 下载额度！")
+                        dAudio = apiCall(task.audio.id, level=task.audio.level)
+                        assert "data" in dAudio, "其他错误： %s" % dAudio
+                        dAudio = dAudio["data"]
+                        if type(dAudio) == list:
+                            dAudio = dAudio[0]
+                        if not dAudio["url"]:
+                            # Attempt to give some sort of explaination
+                            # 来自 https://neteasecloudmusicapi-docs.4everland.app/#/?id=%e8%8e%b7%e5%8f%96%e6%ad%8c%e6%9b%b2%e8%af%a6%e6%83%85
+                            """fee : enum
+                            0: 免费或无版权
+                            1: VIP 歌曲
+                            4: 购买专辑
+                            8: 非会员可免费播放低音质，会员可播放高音质及下载
+                            fee 为 1 或 8 的歌曲均可单独购买 2 元单曲
+                            """
+                            fee = dAudio["fee"]
+                            assert fee != 0, "可能无版权"
+                            assert fee != 1, "VIP歌曲，账户可能无权访问"
+                            assert fee != 4, "歌曲所在专辑需购买"
+                            assert fee != 8, "歌曲可能需要单独购买或以低音质加载"
+                            assert False, "未知原因 (fee=%d)" % fee
+                        logger.info(
+                            "开始下载 #%d / %d - %s - %s - %skbps - %s"
+                            % (
+                                task.index + 1,
+                                task.total,
+                                task.song.Title,
+                                task.song.AlbumName,
+                                dAudio["br"] // 1000,
+                                dAudio["type"].upper(),
+                            )
+                        )
+                        task.extension = dAudio["type"].lower()
                     if not exists(task.audio.dest):
                         makedirs(task.audio.dest)
-                    dest_src = self.download_by_url(
-                        dAudio["url"],
-                        task.save_as + "." + dAudio["type"].lower(),
-                        xfer=True,
-                    )
-                    # Downloading cover
-                    dest_cvr = self.download_by_url(
-                        task.cover.url, task.save_as + ".jpg"
-                    )
+                    if not lyric_only:
+                        dest_src = self.download_by_url(
+                            dAudio["url"],
+                            task.save_as + "." + dAudio["type"].lower(),
+                            xfer=True,
+                        )
+                        # Downloading cover
+                        dest_cvr = self.download_by_url(
+                            task.cover.url, task.save_as + ".jpg"
+                        )
                     # Downloading & Parsing lyrics
                     lrc = LrcParser()
                     dLyrics = track.GetTrackLyricsNew(task.lyrics.id)
@@ -272,20 +276,28 @@ class TaskPoolExecutorThread(Thread):
                         open(task.save_as + ".ass", "w", encoding="utf-8").write(
                             writer.content
                         )
-                    # Tagging the audio
-                    try:
-                        self.tag_audio(task.song, dest_src, dest_cvr)
-                    except Exception as e:
-                        logger.warning("标签失败 - %s - %s" % (task.song.Title, e))
-                    logger.info(
-                        "完成下载 #%d / %d - %s"
-                        % (task.index + 1, task.total, task.song.Title)
-                    )
+                    if lyric_only:
+                        self.finished_tasks += 1
+                        logger.info(
+                            "完成歌词下载 #%d / %d - %s"
+                            % (task.index + 1, task.total, task.song.Title)
+                        )
+                    else:
+                        # Tagging the audio
+                        try:
+                            self.tag_audio(task.song, dest_src, dest_cvr)
+                        except Exception as e:
+                            logger.warning("标签失败 - %s - %s" % (task.song.Title, e))
+                        logger.info(
+                            "完成下载 #%d / %d - %s"
+                            % (task.index + 1, task.total, task.song.Title)
+                        )
                 except Exception as e:
                     logger.warning("下载失败 %s - %s" % (task.song.Title, e))
                     task.routine.result_exception(task.song.ID, e, task.song.Title)
                 # Cleaning up
-                remove(dest_cvr)
+                if dest_cvr:
+                    remove(dest_cvr)
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while True:
@@ -417,17 +429,29 @@ class Playlist(Subroutine):
                 # If audio file already exsists
                 # Skip its download if `--no_overwrite` is explicitly set
                 if self.args.no_overwrite:
-                    if FuzzyPathHelper(output_folder).exists(
-                        output_name, partial_extension_check=True
-                    ):
+                    if self.args.lyric_only:
+                        expected_lyric_files = []
+                        if not {"lrc", "tlyric", "romalrc"} <= set(self.args.lyric_no):
+                            expected_lyric_files.append(output_name + ".lrc")
+                        if "yrc" not in self.args.lyric_no:
+                            expected_lyric_files.append(output_name + ".ass")
+                        already_exists = bool(expected_lyric_files) and all(
+                            exists(join(output_folder, f)) for f in expected_lyric_files
+                        )
+                    else:
+                        already_exists = FuzzyPathHelper(output_folder).exists(
+                            output_name, partial_extension_check=True
+                        )
+                    if already_exists:
                         logger.warning(
                             "单曲 #%d / %d - %s - %s 已存在，跳过"
                             % (index + 1, len(dDetails), song.Title, song.AlbumName)
                         )
                         tSong.skip_download = True
-                        tSong.extension = FuzzyPathHelper(output_folder).get_extension(
-                            output_name
-                        )
+                        if not self.args.lyric_only:
+                            tSong.extension = FuzzyPathHelper(
+                                output_folder
+                            ).get_extension(output_name)
                         self.put(tSong)
                         continue
                 self.put(tSong)
@@ -653,6 +677,12 @@ def parse_args(quit_on_empty_args=True):
         """,
         default="yrc",
     )
+    group.add_argument(
+        "--lyric-only",
+        action="store_true",
+        default=False,
+        help="仅下载歌词，跳过音频下载",
+    )
     group = parser.add_argument_group("登陆")
     group.add_argument("--phone", metavar="手机", default="", help="网易账户手机号")
     group.add_argument(
@@ -780,6 +810,8 @@ def __main__(return_tasks=False):
         format="[%(levelname).4s] %(name)s %(message)s",
         stream=log_stream,
     )
+    if args.lyric_only and {"lrc", "tlyric", "romalrc", "yrc"} <= set(args.lyric_no):
+        logger.warning("仅歌词模式下所有歌词类型均被跳过，将不会下载任何歌词")
     from pyncm.utils.constant import known_good_deviceIds
     from random import choice as rnd_choice
 
@@ -882,7 +914,7 @@ def __main__(return_tasks=False):
                         % (exception_id, exception_obj, " (%s)" % desc if desc else "")
                     )
 
-    if args.save_m3u:
+    if args.save_m3u and not args.lyric_only:
         output_name = args.save_m3u
         output_folder = os.path.dirname(output_name)
 
@@ -896,6 +928,8 @@ def __main__(return_tasks=False):
                 f.write(relPath)
                 f.write("\n")
         logger.info("已保存播放列表至：%s" % output_name)
+    elif args.save_m3u and args.lyric_only:
+        logger.warning("仅歌词模式下不生成 M3U 播放列表")
 
     if failed_ids:
         logger.error("你可以将下载失败的 ID 作为参数以再次下载")
